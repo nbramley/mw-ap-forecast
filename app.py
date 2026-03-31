@@ -10,53 +10,25 @@ st.set_page_config(
 # ── Brand styles ──────────────────────────────────────────────
 st.markdown("""
 <style>
-  /* Hide Streamlit default header */
   #MainMenu, header, footer { visibility: hidden; }
   .block-container { padding-top: 1.5rem; }
-
-  /* FORCE sidebar to always stay open and visible */
-  [data-testid="stSidebar"] {
+  section[data-testid="stSidebar"] {
     background: #0D1B2A !important;
+    display: block !important;
+    visibility: visible !important;
     min-width: 220px !important;
-    width: 220px !important;
   }
-  [data-testid="stSidebar"][aria-expanded="false"] {
-    min-width: 220px !important;
-    width: 220px !important;
-    margin-left: 0px !important;
-  }
-  /* Hide the collapse button */
-  [data-testid="collapsedControl"] { display: none !important; }
-  button[kind="header"] { display: none !important; }
-
-  [data-testid="stSidebar"] * {
-    color: #d8d4cc !important;
-  }
-  [data-testid="stSidebar"] .stRadio label {
-    font-size: 13px !important;
-  }
-
-  /* Page header */
+  section[data-testid="stSidebar"] * { color: #d8d4cc !important; }
+  section[data-testid="stSidebar"] .stRadio label { font-size: 13px !important; }
+  button[data-testid="collapsedControl"] { display: none !important; }
   .mw-header {
-    background: #0D1B2A;
-    color: white;
-    padding: 16px 24px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    background: #0D1B2A; color: white; padding: 16px 24px;
+    border-radius: 8px; margin-bottom: 20px;
+    display: flex; justify-content: space-between; align-items: center;
   }
   .mw-header h1 { font-size: 22px; margin: 0; color: white; }
-  .mw-header .sub {
-    font-size: 11px; color: #B8935A;
-    letter-spacing: 0.12em; text-transform: uppercase;
-  }
-  .mw-badge {
-    background: rgba(184,147,90,0.2); color: #B8935A;
-    padding: 4px 12px; border-radius: 20px;
-    font-size: 12px; font-weight: 600;
-  }
+  .mw-header .sub { font-size: 11px; color: #B8935A; letter-spacing: 0.12em; text-transform: uppercase; }
+  .mw-badge { background: rgba(184,147,90,0.2); color: #B8935A; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
