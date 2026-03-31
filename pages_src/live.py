@@ -1,156 +1,88 @@
-"""Weekly Bill Pay Live — real-time Ramp bill status for the current week."""
+"""Weekly Bill Pay Live — real-time status view pulling from Supabase + Ramp status."""
 import os
-import json
 from datetime import date, timedelta
 
 import requests
 import streamlit as st
 
-from data import monday_of, fmt, fmt_date, parse_d
+from data import PRIORITY_TERMS, INVENTORY_TERMS, adj_back, fmt, fmt_date, monday_of
 
-TODAY      = date(2026, 3, 30)
+TODAY      = date(2026, 3, 31)
 WEEK_START = monday_of(TODAY)
 WEEK_END   = WEEK_START + timedelta(6)
 
-# Statuses that count as "done" for this week
-DONE_STATUSES   = {"INITIATED", "PAID", "SCHEDULED_PAID"}
-PENDING_STATUSES = {"UNSCHEDULED", "SCHEDULED", "READY_FOR_PAYMENT",
-                    "PENDING", "WAITING_FOR_MATCH"}
-
 STATUS_LABELS = {
-    "INITIATED":          "🟢 Initiated",
-    "PAID":               "✅ Paid",
-    "SCHEDULED_PAID":     "✅ Paid",
-    "SCHEDULED":          "🔵 Scheduled",
-    "UNSCHEDULED":        "⚪ Unscheduled",
-    "READY_FOR_PAYMENT":  "🟡 Ready for Payment",
-    "PENDING":            "🟡 Pending",
-    "WAITING_FOR_MATCH":  "🟠 Waiting for Match",
+    "initiated":         "🟢 Initiated",
+    "paid":              "✅ Paid",
+    "scheduled":         "🔵 Scheduled",
+    "unscheduled":       "⚪ Unscheduled",
+    "ready_for_payment": "🟡 Ready for Payment",
+    "pending":           "🟡 Pending",
+    "waiting_for_match": "🟠 Waiting for Match",
 }
 
-STATUS_COLORS = {
-    "INITIATED":         "#2e8b57",
-    "PAID":              "#2e8b57",
-    "SCHEDULED":         "#6495ed",
-    "UNSCHEDULED":       "#9e9990",
-    "READY_FOR_PAYMENT": "#b8860b",
-    "PENDING":           "#b8860b",
-    "WAITING_FOR_MATCH": "#cc7722",
-}
+DONE_STATUSES    = {"initiated", "paid"}
+PENDING_STATUSES = {"unscheduled", "scheduled", "ready_for_payment",
+                    "pending", "waiting_for_match"}
 
 
-# ─────────────────────────────────────────────────────────────
-# RAMP API — live pull
-# ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)  # Cache for 5 minutes — refresh on reopen
-def fetch_live_bills() -> list:
-    """Pull all unpaid + recently paid bills from Ramp. Cached 5 min."""
-    cid  = st.secrets.get("RAMP_CLIENT_ID", "")  or os.environ.get("RAMP_CLIENT_ID", "")
-    csec = st.secrets.get("RAMP_CLIENT_SECRET", "") or os.environ.get("RAMP_CLIENT_SECRET", "")
-
-    if not cid or not csec:
-        # Return demo data if no credentials configured
-        return _demo_bills()
-
+@st.cache_data(ttl=300)
+def fetch_all_bills():
+    """Pull all bills from Supabase."""
+    url = st.secrets.get("SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
+    key = st.secrets.get("SUPABASE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return []
     try:
-        # Get token
-        token_resp = requests.post(
-            "https://api.ramp.com/developer/v1/token",
-            data={"grant_type": "client_credentials",
-                  "client_id": cid, "client_secret": csec,
-                  "scope": "bills:read"},
-            timeout=30,
+        resp = requests.get(
+            f"{url}/rest/v1/bills",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            params={"select": "*", "limit": "1000"},
+            timeout=15,
         )
-        token_resp.raise_for_status()
-        token = token_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
-
-        # Pull bills — all statuses so we can see paid ones too
-        bills, next_page = [], None
-        params = {"from_date": "2024-01-01", "page_size": 100}
-
-        while True:
-            if next_page: params["page_cursor"] = next_page
-            resp = requests.get("https://api.ramp.com/developer/v1/bills",
-                                headers=headers, params=params, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            bills.extend(data.get("data", []))
-            next_page = data.get("page", {}).get("next")
-            if not next_page: break
-
-        return [_parse_bill(b) for b in bills]
-
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        st.error(f"Ramp API error: {e}")
-        return _demo_bills()
+        st.warning(f"Could not load bills from Supabase: {e}")
+        return []
 
 
-def _parse_bill(b: dict) -> dict:
-    cd = b.get("canonical_dates") or {}
-    if isinstance(cd, str):
-        try: cd = json.loads(cd)
-        except: cd = {}
-    return {
-        "id":        b.get("id", ""),
-        "vendor":    (b.get("vendor") or {}).get("name", "") or b.get("payee_name", ""),
-        "status":    (b.get("payment_status") or "UNSCHEDULED").upper().replace(" ", "_"),
-        "amount":    float(b.get("amount") or 0),
-        "due_date":  parse_d(cd.get("bill_due_at")),
-        "paid_date": parse_d(cd.get("bill_paid_at")),
-        "memo":      (b.get("memo") or "")[:60],
-    }
+def parse_d(s):
+    if not s: return None
+    try: return date.fromisoformat(str(s)[:10])
+    except: return None
 
 
-def _demo_bills() -> list:
-    """Demo data when Ramp credentials not configured."""
-    return [
-        {"id":"g001","vendor":"Google LLC","status":"INITIATED","amount":184642.80,
-         "due_date":date(2026,3,30),"paid_date":date(2026,3,30),"memo":"Google Ads advertising services"},
-        {"id":"xb01","vendor":"XB Fulfillment","status":"INITIATED","amount":17165.63,
-         "due_date":date(2026,3,30),"paid_date":date(2026,3,30),"memo":"Drayage March 2 to March 8"},
-        {"id":"xb02","vendor":"XB Fulfillment","status":"INITIATED","amount":6316.47,
-         "due_date":date(2026,3,30),"paid_date":date(2026,3,30),"memo":"Drayage Feb 23 to Mar 01"},
-        {"id":"xb03","vendor":"XB Fulfillment","status":"INITIATED","amount":3824.40,
-         "due_date":date(2026,3,30),"paid_date":date(2026,3,30),"memo":"Scrap charges disposal services"},
-        {"id":"ada1","vendor":"Alexander Adamov (Fit Modeling Services)","status":"INITIATED","amount":300.00,
-         "due_date":date(2026,3,30),"paid_date":date(2026,3,30),"memo":"Fitting services"},
-        {"id":"sbh1","vendor":"SBH Plus, Inc","status":"INITIATED","amount":1428.00,
-         "due_date":date(2026,3,30),"paid_date":date(2026,3,30),"memo":"Temporary staffing"},
-        {"id":"ad01","vendor":"Ad Results Media, LLC","status":"INITIATED","amount":88751.14,
-         "due_date":date(2026,1,6),"paid_date":date(2026,3,30),"memo":"Broadcast media - programmatic"},
-        {"id":"cbz1","vendor":"CBIZ CPAS P.C.","status":"UNSCHEDULED","amount":73500.00,
-         "due_date":date(2026,2,1),"paid_date":None,"memo":"Audit services fiscal year 2025"},
-        {"id":"rak1","vendor":"Rakuten Marketing LLC","status":"UNSCHEDULED","amount":40502.60,
-         "due_date":date(2026,2,28),"paid_date":None,"memo":"Affiliate marketing commissions"},
-        {"id":"ben1","vendor":"Benjo Arwas Studio","status":"UNSCHEDULED","amount":21322.75,
-         "due_date":date(2026,2,15),"paid_date":None,"memo":"Photography services"},
-        {"id":"joa1","vendor":"Joanna Goddard, Inc.","status":"UNSCHEDULED","amount":20000.00,
-         "due_date":date(2026,2,28),"paid_date":None,"memo":"Advertising services"},
-        {"id":"nic1","vendor":"Nicholas Duers Photography LLC","status":"UNSCHEDULED","amount":15862.71,
-         "due_date":date(2026,2,1),"paid_date":None,"memo":"Photography services"},
-        {"id":"agen1","vendor":"Agency Within LLC DBA Brkfst","status":"READY_FOR_PAYMENT","amount":6180.14,
-         "due_date":date(2026,3,30),"paid_date":None,"memo":"Brkfst Ad Spend Fee Feb 2026"},
-        {"id":"rhg1","vendor":"Rhg USA LLC","status":"READY_FOR_PAYMENT","amount":8954.20,
-         "due_date":date(2026,3,15),"paid_date":None,"memo":"Recycled LDPE bags"},
-        {"id":"imp1","vendor":"Imperial Dade","status":"UNSCHEDULED","amount":12427.43,
-         "due_date":date(2026,2,20),"paid_date":None,"memo":"Shipping boxes"},
-        {"id":"sgs1","vendor":"SGS North America Inc.","status":"PENDING","amount":4188.99,
-         "due_date":date(2026,3,30),"paid_date":None,"memo":"Lab testing services"},
-        {"id":"tuc1","vendor":"Tucker & Latifi, LLP","status":"UNSCHEDULED","amount":5890.00,
-         "due_date":date(2026,2,15),"paid_date":None,"memo":"Legal fees - trademark"},
-        {"id":"ken1","vendor":"Kensington Grey International Inc.","status":"UNSCHEDULED","amount":6000.00,
-         "due_date":date(2026,2,28),"paid_date":None,"memo":"Influencer marketing"},
-    ]
+def get_payment_date(bill: dict) -> date:
+    """Calculate expected payment date for a bill based on terms."""
+    vendor = bill.get("vendor", "")
+    source = bill.get("source", "")
+    due    = parse_d(bill.get("due_date"))
+    if not due:
+        return None
+
+    if source == "NetSuite":
+        days = INVENTORY_TERMS.get(vendor, 0)
+        return adj_back(due + timedelta(days=days))
+    elif source == "Ramp":
+        if vendor in PRIORITY_TERMS:
+            days = PRIORITY_TERMS.get(vendor, 60)
+            if days == "due":
+                return adj_back(due)
+            elif isinstance(days, int):
+                return adj_back(due + timedelta(days=days))
+        return adj_back(due + timedelta(days=60))
+    return None
 
 
-def _is_this_week(d: date) -> bool:
-    return d and WEEK_START <= d <= WEEK_END
+def days_out_str(due: date) -> str:
+    if not due: return "—"
+    days = (TODAY - due).days
+    if days > 0:    return f"+{days}d overdue"
+    elif days == 0: return "Due today"
+    else:           return f"In {-days}d"
 
 
-# ─────────────────────────────────────────────────────────────
-# PAGE
-# ─────────────────────────────────────────────────────────────
 def show():
     st.markdown(f"""
     <div class="mw-header">
@@ -159,36 +91,61 @@ def show():
         <h1>⚡ Weekly Bill Pay — Live</h1>
       </div>
       <div class="mw-badge" style="background:rgba(46,139,87,0.2);color:#2e8b57">
-        Live from Ramp · refreshes every 5 min
+        Wk {WEEK_START.strftime('%-m/%-d')}–{WEEK_END.strftime('%-m/%-d')} · From Supabase
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.caption(f"Current week: {WEEK_START.strftime('%-m/%-d')} – {WEEK_END.strftime('%-m/%-d/%Y')}  ·  "
-               f"Initiated bills are treated as paid  ·  Last refresh: just now")
+    st.caption(
+        f"Initiated bills treated as paid · "
+        f"Status updated each Monday via 'run weekly AP update' · "
+        f"As of {TODAY.strftime('%-m/%-d/%Y')}"
+    )
 
-    with st.spinner("Loading live Ramp data..."):
-        all_bills = fetch_live_bills()
+    with st.spinner("Loading bills from Supabase..."):
+        raw_bills = fetch_all_bills()
 
-    if not all_bills:
-        st.warning("No bills found — check Ramp credentials in Streamlit secrets.")
+    if not raw_bills:
+        st.warning("No bills found in Supabase. Run 'weekly AP update' in Claude to populate.")
         return
 
-    # ── Categorize bills ─────────────────────────────────────
-    # DONE: Initiated (any due date) OR Paid this week
-    done, pending = [], []
+    # ── Categorize ALL bills by status ─────────────────────────
+    # Done = Initiated or Paid
+    # Pending = everything else (Unscheduled, Scheduled, Ready for Payment, etc.)
+    # For NetSuite bills, treat as Unpaid/pending unless explicitly paid
 
-    for b in all_bills:
-        if b["amount"] <= 0: continue
-        s = b["status"]
+    done    = []
+    pending = []
 
-        if s == "INITIATED":
-            done.append(b)
-        elif s in ("PAID", "SCHEDULED_PAID"):
-            if _is_this_week(b["paid_date"]):
-                done.append(b)
-        elif s in PENDING_STATUSES:
-            pending.append(b)
+    for b in raw_bills:
+        vendor = b.get("vendor", "")
+        amount = float(b.get("amount") or 0)
+        if amount <= 0:
+            continue
+
+        source      = b.get("source", "")
+        paid_status = (b.get("paid_status") or "Unscheduled").lower().replace(" ", "_")
+        due         = parse_d(b.get("due_date"))
+        inv_id      = b.get("invoice_id", "")
+        memo        = (b.get("memo") or b.get("description") or "")[:60]
+        pay_date    = get_payment_date(b)
+
+        row = {
+            "vendor":   vendor,
+            "inv":      inv_id,
+            "memo":     memo,
+            "status":   paid_status,
+            "status_label": STATUS_LABELS.get(paid_status, paid_status.title()),
+            "due":      due,
+            "pay_date": pay_date,
+            "amount":   amount,
+            "source":   source,
+        }
+
+        if paid_status in DONE_STATUSES:
+            done.append(row)
+        else:
+            pending.append(row)
 
     # Sort both by amount desc
     done    = sorted(done,    key=lambda x: -x["amount"])
@@ -199,82 +156,97 @@ def show():
     total_all     = total_done + total_pending
     pct_done      = (total_done / total_all * 100) if total_all > 0 else 0
 
-    # ── Summary cards ─────────────────────────────────────────
+    # ── Summary cards ───────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total This Week", fmt(total_all))
-    c2.metric("✅ Paid / Initiated", fmt(total_done), f"{len(done)} bills")
-    c3.metric("⏳ Still Pending", fmt(total_pending), f"{len(pending)} bills")
-    c4.metric("% Complete", f"{pct_done:.0f}%")
+    c1.metric("Total Outstanding",   fmt(total_all))
+    c2.metric("✅ Paid / Initiated",  fmt(total_done),    f"{len(done)} bills")
+    c3.metric("⏳ Still Pending",     fmt(total_pending), f"{len(pending)} bills")
+    c4.metric("% Complete",          f"{pct_done:.0f}%")
 
     # Progress bar
     st.markdown(f"""
-    <div style="background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden;height:8px;margin:8px 0 20px;">
-      <div style="background:#2e8b57;width:{pct_done:.0f}%;height:100%;border-radius:6px;transition:width 0.5s;"></div>
+    <div style="background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden;
+    height:8px;margin:8px 0 20px;">
+      <div style="background:#2e8b57;width:{pct_done:.0f}%;height:100%;border-radius:6px;"></div>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Filter controls ─────────────────────────────────────────
     st.markdown("---")
+    col_s, col_src, col_wk = st.columns([3, 2, 2])
+    search   = col_s.text_input("🔍 Search vendors", placeholder="Filter by vendor...")
+    src_flt  = col_src.selectbox("Source", ["All", "Ramp", "NetSuite"])
+    wk_only  = col_wk.checkbox("This week's payments only", value=False)
 
-    # ── DONE section ─────────────────────────────────────────
-    st.markdown("### ✅ Paid & Initiated")
-    st.caption("Bills marked as Paid in Ramp this week, plus all Initiated bills (payment triggered)")
+    def apply_filters(bills):
+        if search:
+            bills = [b for b in bills if search.lower() in b["vendor"].lower()]
+        if src_flt != "All":
+            bills = [b for b in bills if b["source"] == src_flt]
+        if wk_only:
+            bills = [b for b in bills if b.get("pay_date") and WEEK_START <= b["pay_date"] <= WEEK_END]
+        return bills
 
-    if done:
-        import pandas as pd
-        done_rows = []
-        for b in done:
-            status_label = STATUS_LABELS.get(b["status"], b["status"])
-            done_rows.append({
+    filtered_done    = apply_filters(done)
+    filtered_pending = apply_filters(pending)
+
+    import pandas as pd
+
+    # ── DONE section ────────────────────────────────────────────
+    st.markdown(f"### ✅ Paid & Initiated  <span style='font-size:14px;color:#9e9990;font-weight:normal'>({len(filtered_done)} bills · {fmt(sum(b['amount'] for b in filtered_done))})</span>", unsafe_allow_html=True)
+    st.caption("Bills marked Paid in Ramp, plus all Initiated bills (payment triggered)")
+
+    if filtered_done:
+        rows = []
+        for b in filtered_done:
+            rows.append({
                 "Vendor":      b["vendor"],
+                "Invoice #":   b["inv"],
                 "Description": b["memo"],
-                "Status":      status_label,
-                "Due Date":    fmt_date(b["due_date"]),
-                "Paid Date":   fmt_date(b["paid_date"]) if b["paid_date"] else "—",
+                "Status":      b["status_label"],
+                "Due Date":    fmt_date(b["due"]) if b["due"] else "—",
+                "Sched. Pay":  fmt_date(b["pay_date"]) if b["pay_date"] else "—",
                 "Amount":      fmt(b["amount"]),
             })
-        df_done = pd.DataFrame(done_rows)
-        st.dataframe(df_done, use_container_width=True, hide_index=True,
-                     height=min(35 * len(done_rows) + 38, 400))
-
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                     height=min(35 * len(rows) + 38, 500))
         col_l, col_r = st.columns([4, 1])
         col_l.markdown("*Subtotal — Paid & Initiated*")
-        col_r.markdown(f"**{fmt(total_done)}**")
+        col_r.markdown(f"**{fmt(sum(b['amount'] for b in filtered_done))}**")
     else:
-        st.info("No bills paid or initiated this week yet.")
+        st.info("No paid or initiated bills match current filters.")
 
     st.markdown("---")
 
-    # ── PENDING section ───────────────────────────────────────
-    st.markdown("### ⏳ Still Pending")
-    st.caption("Bills not yet initiated or paid — includes overdue unpaid bills")
+    # ── PENDING section ─────────────────────────────────────────
+    st.markdown(f"### ⏳ Still Pending  <span style='font-size:14px;color:#9e9990;font-weight:normal'>({len(filtered_pending)} bills · {fmt(sum(b['amount'] for b in filtered_pending))})</span>", unsafe_allow_html=True)
+    st.caption("Bills not yet initiated or paid — includes all overdue unpaid bills")
 
-    if pending:
-        import pandas as pd
-        pending_rows = []
-        for b in pending:
-            days_out = (TODAY - b["due_date"]).days if b["due_date"] else 0
-            overdue_str = f"+{days_out}d overdue" if days_out > 0 else (
-                f"due {fmt_date(b['due_date'])}" if b["due_date"] else "—")
-            status_label = STATUS_LABELS.get(b["status"], b["status"])
-            pending_rows.append({
+    if filtered_pending:
+        rows = []
+        for b in filtered_pending:
+            rows.append({
                 "Vendor":      b["vendor"],
+                "Invoice #":   b["inv"],
                 "Description": b["memo"],
-                "Status":      status_label,
-                "Due":         overdue_str,
+                "Status":      b["status_label"],
+                "Due Date":    fmt_date(b["due"]) if b["due"] else "—",
+                "Days O/S":    days_out_str(b["due"]),
+                "Sched. Pay":  fmt_date(b["pay_date"]) if b["pay_date"] else "—",
                 "Amount":      fmt(b["amount"]),
             })
-        df_pend = pd.DataFrame(pending_rows)
-        st.dataframe(df_pend, use_container_width=True, hide_index=True,
-                     height=min(35 * len(pending_rows) + 38, 500))
-
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                     height=min(35 * len(rows) + 38, 600))
         col_l, col_r = st.columns([4, 1])
         col_l.markdown("*Subtotal — Still Pending*")
-        col_r.markdown(f"**{fmt(total_pending)}**")
+        col_r.markdown(f"**{fmt(sum(b['amount'] for b in filtered_pending))}**")
     else:
-        st.success("All bills paid or initiated this week! 🎉")
+        st.success("All bills paid or initiated! 🎉")
 
-    # ── Refresh button ─────────────────────────────────────────
     st.markdown("---")
-    if st.button("🔄 Refresh from Ramp now"):
+    if st.button("🔄 Refresh from Supabase"):
         st.cache_data.clear()
         st.rerun()
+    st.caption(f"{len(raw_bills)} total bills in Supabase · {len(done)} paid/initiated · {len(pending)} pending")
