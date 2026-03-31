@@ -4,7 +4,7 @@ st.set_page_config(
     page_title="Mack Weldon — AP Forecast",
     page_icon="💼",
     layout="wide",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="expanded",
 )
 
 # ── Brand styles ──────────────────────────────────────────────
@@ -14,17 +14,21 @@ st.markdown("""
   #MainMenu, header, footer { visibility: hidden; }
   .block-container { padding-top: 1.5rem; }
 
-  /* Brand colours */
-  :root {
-    --navy: #0D1B2A;
-    --gold: #B8935A;
-    --cream: #F5F0E8;
-  }
-
-  /* Sidebar */
+  /* FORCE sidebar to always stay open and visible */
   [data-testid="stSidebar"] {
     background: #0D1B2A !important;
+    min-width: 220px !important;
+    width: 220px !important;
   }
+  [data-testid="stSidebar"][aria-expanded="false"] {
+    min-width: 220px !important;
+    width: 220px !important;
+    margin-left: 0px !important;
+  }
+  /* Hide the collapse button */
+  [data-testid="collapsedControl"] { display: none !important; }
+  button[kind="header"] { display: none !important; }
+
   [data-testid="stSidebar"] * {
     color: #d8d4cc !important;
   }
@@ -43,24 +47,15 @@ st.markdown("""
     justify-content: space-between;
     align-items: center;
   }
-  .mw-header h1 {
-    font-size: 22px;
-    margin: 0;
-    color: white;
-  }
+  .mw-header h1 { font-size: 22px; margin: 0; color: white; }
   .mw-header .sub {
-    font-size: 11px;
-    color: #B8935A;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-size: 11px; color: #B8935A;
+    letter-spacing: 0.12em; text-transform: uppercase;
   }
   .mw-badge {
-    background: rgba(184,147,90,0.2);
-    color: #B8935A;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
+    background: rgba(184,147,90,0.2); color: #B8935A;
+    padding: 4px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 600;
   }
 </style>
 """, unsafe_allow_html=True)
