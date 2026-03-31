@@ -1,24 +1,36 @@
 import streamlit as st
-
 st.set_page_config(
     page_title="Mack Weldon — AP Forecast",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 st.markdown("""
 <style>
-  #MainMenu, footer, header { visibility: hidden; }
+  #MainMenu, footer { visibility: hidden; }
+  header { visibility: hidden; }
   .block-container { padding-top: 0.5rem; }
-  [data-testid="stSidebar"] { background-color: #0D1B2A !important; }
-  [data-testid="stSidebarContent"] { background-color: #0D1B2A !important; }
+  [data-testid="stSidebar"] {
+    background-color: #0D1B2A !important;
+    min-width: 200px !important;
+  }
+  [data-testid="stSidebarContent"] {
+    background-color: #0D1B2A !important;
+  }
+  [data-testid="stSidebar"] button,
+  [data-testid="collapsedControl"] {
+    display: none !important;
+    visibility: hidden !important;
+  }
   [data-testid="stSidebar"] p,
   [data-testid="stSidebar"] label,
-  [data-testid="stSidebar"] span { color: #d8d4cc !important; }
+  [data-testid="stSidebar"] span {
+    color: #d8d4cc !important;
+  }
   .mw-header {
     background: #0D1B2A; color: white;
-    padding: 14px 20px; border-radius: 8px; margin-bottom: 16px;
+    padding: 14px 20px; border-radius: 8px;
+    margin-bottom: 16px;
     display: flex; justify-content: space-between; align-items: center;
   }
   .mw-header h1 { font-size: 20px; margin: 0; color: white; }
@@ -28,13 +40,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### 💼 MACK WELDON")
-    st.markdown("#### AP Forecast")
+    st.markdown(
+        "<div style='padding:16px 0 8px;'><span style='font-family:serif;font-size:16px;color:white;font-weight:600'>💼 MACK WELDON</span><br>"
+        "<span style='font-size:10px;color:#B8935A;letter-spacing:0.12em'>AP FORECAST</span></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("---")
     page = st.radio(
         "Navigate",
-        ["📊 AP Forecast", "📋 Weekly Bill Pay", "☰ Bill View",
-         "⬡ Inventory Detail", "✎ Payment Terms"],
+        ["📊 AP Forecast", "📋 Weekly Bill Pay", "⚡ Weekly Bill Pay Live",
+         "☰ Bill View", "⬡ Inventory Detail", "✎ Payment Terms"],
         label_visibility="collapsed"
     )
     st.markdown("---")
@@ -48,6 +63,9 @@ if page == "📊 AP Forecast":
     show()
 elif page == "📋 Weekly Bill Pay":
     from pages_src.weekly import show
+    show()
+elif page == "⚡ Weekly Bill Pay Live":
+    from pages_src.live import show
     show()
 elif page == "☰ Bill View":
     from pages_src.bills import show
