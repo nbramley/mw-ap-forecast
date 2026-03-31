@@ -1,7 +1,54 @@
-"""Payment Terms — editable vendor rules."""
+"""Payment Terms — editable vendor rules + Customs & Duties editor."""
 import json
+import os
+import requests
 import streamlit as st
 from data import INVENTORY_TERMS, PRIORITY_TERMS
+
+MONTH_NAMES = ["January","February","March","April","May","June",
+               "July","August","September","October","November","December"]
+
+
+@st.cache_data(ttl=60)
+def fetch_customs():
+    url = st.secrets.get("SUPABASE_URL","") or os.environ.get("SUPABASE_URL","")
+    key = st.secrets.get("SUPABASE_KEY","") or os.environ.get("SUPABASE_KEY","")
+    if not url or not key:
+        return {}
+    try:
+        resp = requests.get(
+            f"{url}/rest/v1/customs_duties",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            params={"select": "*", "order": "month_num.asc"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return {row["month_num"]: row for row in resp.json()}
+    except Exception as e:
+        st.warning(f"Could not load customs data: {e}")
+        return {}
+
+
+def save_customs(month_num: int, amount: float, notes: str = ""):
+    url = st.secrets.get("SUPABASE_URL","") or os.environ.get("SUPABASE_URL","")
+    key = st.secrets.get("SUPABASE_KEY","") or os.environ.get("SUPABASE_KEY","")
+    if not url or not key:
+        return False
+    try:
+        resp = requests.patch(
+            f"{url}/rest/v1/customs_duties",
+            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json", "Prefer": "return=minimal"},
+            params={"month_num": f"eq.{month_num}"},
+            json={"amount": amount, "notes": notes},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Save failed: {e}")
+        return False
 
 DEFAULT_INVENTORY = [
     {"vendor": k, "days": v, "description": f"{v} days past due date"}
@@ -53,6 +100,48 @@ def show():
         "To make changes permanent in the Python engine, also update `data.py`.",
         icon="ℹ️"
     )
+
+    # ── CUSTOMS & DUTIES EDITOR ───────────────────────────────
+    st.markdown("### 🛃 Customs & Duties — Monthly Amounts")
+    st.caption("Paid on the 23rd of each month. Changes save to Supabase and persist week to week.")
+
+    customs = fetch_customs()
+    if not customs:
+        st.warning("Could not load customs data from Supabase.")
+    else:
+        from datetime import date as _date
+        current_month = _date.today().month
+        months_ordered = list(range(1, 13))
+        months_ordered = months_ordered[current_month-1:] + months_ordered[:current_month-1]
+        changed = {}
+        cols = st.columns(4)
+        for i, m in enumerate(months_ordered):
+            row = customs.get(m, {})
+            current_amt   = float(row.get("amount", 0))
+            current_notes = row.get("notes", "") or ""
+            with cols[i % 4]:
+                st.markdown(f"**{MONTH_NAMES[m-1]}** · *23rd*")
+                new_amt = st.number_input(
+                    f"Amount {m}", value=current_amt, min_value=0.0, step=1000.0,
+                    format="%.0f", key=f"cust_{m}", label_visibility="collapsed",
+                )
+                new_notes = st.text_input(
+                    f"Notes {m}", value=current_notes, key=f"custnotes_{m}",
+                    placeholder="Actual / Forecast", label_visibility="collapsed",
+                )
+                if new_amt != current_amt or new_notes != current_notes:
+                    changed[m] = (new_amt, new_notes)
+        if changed:
+            if st.button(f"💾 Save {len(changed)} customs change(s)", type="primary", key="save_customs"):
+                ok = sum(1 for m, (a, n) in changed.items() if save_customs(m, a, n))
+                if ok == len(changed):
+                    st.success(f"✅ Saved {ok} month(s) — all tabs will reflect the update.")
+                    st.rerun()
+                else:
+                    st.error("Some saves failed — check Supabase connection.")
+
+    st.markdown("---")
+
 
     # Load from session state or defaults
     if "terms_inventory" not in st.session_state:
