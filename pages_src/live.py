@@ -1,15 +1,27 @@
-"""Weekly Bill Pay Live — real-time status view pulling from Supabase + Ramp status."""
+"""Weekly Bill Pay Live — real-time status view pulling from Supabase."""
 import os
 from datetime import date, timedelta
 
+import pandas as pd
 import requests
 import streamlit as st
 
-from data import PRIORITY_TERMS, INVENTORY_TERMS, adj_back, fmt, fmt_date, monday_of
+from data import (PRIORITY_TERMS, INVENTORY_TERMS, adj_back,
+                  fmt, fmt_date, monday_of, google_pay_date, ramp_pay_date,
+                  XB_WEEK)
 
-TODAY      = date(2026, 3, 31)
-WEEK_START = monday_of(TODAY)
-WEEK_END   = WEEK_START + timedelta(6)
+def get_today():
+    return date.today()
+
+def sat_fri_window(d: date):
+    """Return (Saturday, Friday) of the Sat–Fri week containing d."""
+    days_since_sat = (d.weekday() + 2) % 7
+    sat = d - timedelta(days=days_since_sat)
+    return sat, sat + timedelta(6)
+
+def get_week_starts(anchor: date, n=6):
+    mon = monday_of(anchor)
+    return [mon + timedelta(weeks=i) for i in range(n)]
 
 STATUS_LABELS = {
     "initiated":         "🟢 Initiated",
@@ -17,18 +29,16 @@ STATUS_LABELS = {
     "scheduled":         "🔵 Scheduled",
     "unscheduled":       "⚪ Unscheduled",
     "ready_for_payment": "🟡 Ready for Payment",
+    "rejected":          "🔴 Rejected",
     "pending":           "🟡 Pending",
     "waiting_for_match": "🟠 Waiting for Match",
 }
 
-DONE_STATUSES    = {"initiated", "paid"}
-PENDING_STATUSES = {"unscheduled", "scheduled", "ready_for_payment",
-                    "pending", "waiting_for_match"}
+DONE_STATUSES = {"initiated", "paid"}
 
 
 @st.cache_data(ttl=300)
 def fetch_all_bills():
-    """Pull all bills from Supabase."""
     url = st.secrets.get("SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
     key = st.secrets.get("SUPABASE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
     if not url or not key:
@@ -53,37 +63,35 @@ def parse_d(s):
     except: return None
 
 
-def get_payment_date(bill: dict) -> date:
-    """Calculate expected payment date for a bill based on terms."""
+def get_payment_date(bill: dict, week_starts: list):
     vendor = bill.get("vendor", "")
     source = bill.get("source", "")
+    status = (bill.get("paid_status") or "").strip()
     due    = parse_d(bill.get("due_date"))
     if not due:
         return None
-
     if source == "NetSuite":
         days = INVENTORY_TERMS.get(vendor, 0)
         return adj_back(due + timedelta(days=days))
     elif source == "Ramp":
-        if vendor in PRIORITY_TERMS:
-            days = PRIORITY_TERMS.get(vendor, 60)
-            if days == "due":
-                return adj_back(due)
-            elif isinstance(days, int):
-                return adj_back(due + timedelta(days=days))
-        return adj_back(due + timedelta(days=60))
+        return ramp_pay_date(vendor, status, due, week_starts)
     return None
 
 
-def days_out_str(due: date) -> str:
-    if not due: return "—"
-    days = (TODAY - due).days
-    if days > 0:    return f"+{days}d overdue"
-    elif days == 0: return "Due today"
-    else:           return f"In {-days}d"
+def days_os(pay_date: date, today: date) -> str:
+    if not pay_date:
+        return "—"
+    delta = (today - pay_date).days
+    return str(delta)
 
 
 def show():
+    today       = get_today()
+    sat, fri    = sat_fri_window(today)
+    week_starts = get_week_starts(today)
+    cur_mon     = week_starts[0]
+    cur_sun     = cur_mon + timedelta(6)
+
     st.markdown(f"""
     <div class="mw-header">
       <div>
@@ -91,15 +99,14 @@ def show():
         <h1>⚡ Weekly Bill Pay — Live</h1>
       </div>
       <div class="mw-badge" style="background:rgba(46,139,87,0.2);color:#2e8b57">
-        Wk {WEEK_START.strftime('%-m/%-d')}–{WEEK_END.strftime('%-m/%-d')} · From Supabase
+        As of {today.strftime('%-m/%-d/%Y')}
       </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.caption(
-        f"Initiated bills treated as paid · "
-        f"Status updated each Monday via 'run weekly AP update' · "
-        f"As of {TODAY.strftime('%-m/%-d/%Y')}"
+        f"Paid & Initiated window: {sat.strftime('%-m/%-d')}–{fri.strftime('%-m/%-d')}  ·  "
+        f"AP forecast week: {cur_mon.strftime('%-m/%-d')}–{cur_sun.strftime('%-m/%-d')}"
     )
 
     with st.spinner("Loading bills from Supabase..."):
@@ -109,144 +116,157 @@ def show():
         st.warning("No bills found in Supabase. Run 'weekly AP update' in Claude to populate.")
         return
 
-    # ── Categorize ALL bills by status ─────────────────────────
-    # Done = Initiated or Paid
-    # Pending = everything else (Unscheduled, Scheduled, Ready for Payment, etc.)
-    # For NetSuite bills, treat as Unpaid/pending unless explicitly paid
-
-    done    = []
-    pending = []
+    done      = []
+    this_week = []
+    overdue   = []
 
     for b in raw_bills:
-        vendor = b.get("vendor", "")
         amount = float(b.get("amount") or 0)
         if amount <= 0:
             continue
 
+        vendor      = b.get("vendor", "")
         source      = b.get("source", "")
         paid_status = (b.get("paid_status") or "Unscheduled").lower().replace(" ", "_")
         due         = parse_d(b.get("due_date"))
+        as_of       = parse_d(b.get("as_of_date"))
         inv_id      = b.get("invoice_id", "")
         memo        = (b.get("memo") or b.get("description") or "")[:60]
-        pay_date    = get_payment_date(b)
+        pay_date    = get_payment_date(b, week_starts)
 
         row = {
-            "vendor":   vendor,
-            "inv":      inv_id,
-            "memo":     memo,
-            "status":   paid_status,
-            "status_label": STATUS_LABELS.get(paid_status, paid_status.title()),
-            "due":      due,
-            "pay_date": pay_date,
-            "amount":   amount,
-            "source":   source,
+            "vendor":       vendor,
+            "inv":          inv_id,
+            "memo":         memo,
+            "status":       paid_status,
+            "status_label": STATUS_LABELS.get(paid_status, paid_status.replace("_", " ").title()),
+            "due":          due,
+            "as_of":        as_of,
+            "pay_date":     pay_date,
+            "amount":       amount,
+            "source":       source,
         }
 
         if paid_status in DONE_STATUSES:
-            done.append(row)
+            if as_of and sat <= as_of <= fri:
+                done.append(row)
         else:
-            pending.append(row)
+            if pay_date is None:
+                continue
+            if pay_date < cur_mon:
+                overdue.append(row)
+            elif cur_mon <= pay_date <= cur_sun:
+                this_week.append(row)
 
-    # Sort both by amount desc
-    done    = sorted(done,    key=lambda x: -x["amount"])
-    pending = sorted(pending, key=lambda x: -x["amount"])
+    # Sort: Done → Initiated first then Paid, both by as_of date asc
+    done.sort(key=lambda x: (0 if x["status"] == "initiated" else 1, x["as_of"] or date.max))
+    this_week.sort(key=lambda x: -x["amount"])
+    overdue.sort(key=lambda x: x["pay_date"] or date.max)
 
     total_done    = sum(b["amount"] for b in done)
-    total_pending = sum(b["amount"] for b in pending)
-    total_all     = total_done + total_pending
-    pct_done      = (total_done / total_all * 100) if total_all > 0 else 0
+    total_this_wk = sum(b["amount"] for b in this_week)
+    total_overdue = sum(b["amount"] for b in overdue)
 
-    # ── Summary cards ───────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Outstanding",   fmt(total_all))
-    c2.metric("✅ Paid / Initiated",  fmt(total_done),    f"{len(done)} bills")
-    c3.metric("⏳ Still Pending",     fmt(total_pending), f"{len(pending)} bills")
-    c4.metric("% Complete",          f"{pct_done:.0f}%")
+    c1.metric("✅ Paid & Initiated",  fmt(total_done),    f"{len(done)} bills")
+    c2.metric("📋 This Week Pending", fmt(total_this_wk), f"{len(this_week)} bills")
+    c3.metric("⚠️ Overdue Pending",   fmt(total_overdue), f"{len(overdue)} bills")
+    c4.metric("🗓 AP Week", f"{cur_mon.strftime('%-m/%-d')}–{cur_sun.strftime('%-m/%-d')}")
 
-    # Progress bar
-    st.markdown(f"""
-    <div style="background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden;
-    height:8px;margin:8px 0 20px;">
-      <div style="background:#2e8b57;width:{pct_done:.0f}%;height:100%;border-radius:6px;"></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Filter controls ─────────────────────────────────────────
     st.markdown("---")
-    col_s, col_src, col_wk = st.columns([3, 2, 2])
-    search   = col_s.text_input("🔍 Search vendors", placeholder="Filter by vendor...")
-    src_flt  = col_src.selectbox("Source", ["All", "Ramp", "NetSuite"])
-    wk_only  = col_wk.checkbox("This week's payments only", value=False)
+    col_s, col_src = st.columns([4, 2])
+    search  = col_s.text_input("🔍 Search vendors", placeholder="Filter by vendor name...")
+    src_flt = col_src.selectbox("Source", ["All", "Ramp", "NetSuite"])
 
     def apply_filters(bills):
         if search:
             bills = [b for b in bills if search.lower() in b["vendor"].lower()]
         if src_flt != "All":
             bills = [b for b in bills if b["source"] == src_flt]
-        if wk_only:
-            bills = [b for b in bills if b.get("pay_date") and WEEK_START <= b["pay_date"] <= WEEK_END]
         return bills
 
-    filtered_done    = apply_filters(done)
-    filtered_pending = apply_filters(pending)
+    f_done    = apply_filters(done)
+    f_this_wk = apply_filters(this_week)
+    f_overdue = apply_filters(overdue)
 
-    import pandas as pd
+    # ── Section 1: Paid & Initiated ──────────────────────────────────────
+    st.markdown(
+        f"### ✅ Paid & Initiated "
+        f"<span style='font-size:14px;color:#9e9990;font-weight:normal'>"
+        f"({len(f_done)} bills · {fmt(sum(b['amount'] for b in f_done))}) "
+        f"· {sat.strftime('%-m/%-d')}–{fri.strftime('%-m/%-d')}"
+        f"</span>", unsafe_allow_html=True)
+    st.caption("Initiated first (then Paid), sorted by date updated in Ramp.")
 
-    # ── DONE section ────────────────────────────────────────────
-    st.markdown(f"### ✅ Paid & Initiated  <span style='font-size:14px;color:#9e9990;font-weight:normal'>({len(filtered_done)} bills · {fmt(sum(b['amount'] for b in filtered_done))})</span>", unsafe_allow_html=True)
-    st.caption("Bills marked Paid in Ramp, plus all Initiated bills (payment triggered)")
-
-    if filtered_done:
-        rows = []
-        for b in filtered_done:
-            rows.append({
-                "Vendor":      b["vendor"],
-                "Invoice #":   b["inv"],
-                "Description": b["memo"],
-                "Status":      b["status_label"],
-                "Due Date":    fmt_date(b["due"]) if b["due"] else "—",
-                "Sched. Pay":  fmt_date(b["pay_date"]) if b["pay_date"] else "—",
-                "Amount":      fmt(b["amount"]),
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True,
-                     height=min(35 * len(rows) + 38, 500))
-        col_l, col_r = st.columns([4, 1])
-        col_l.markdown("*Subtotal — Paid & Initiated*")
-        col_r.markdown(f"**{fmt(sum(b['amount'] for b in filtered_done))}**")
+    if f_done:
+        rows = [{"Vendor": b["vendor"], "Invoice #": b["inv"],
+                 "Status": b["status_label"],
+                 "Due Date": fmt_date(b["due"]) if b["due"] else "—",
+                 "As Of": fmt_date(b["as_of"]) if b["as_of"] else "—",
+                 "Amount": fmt(b["amount"])} for b in f_done]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                     height=min(35 * len(rows) + 38, 450))
+        cl, cr = st.columns([4, 1])
+        cl.markdown("*Subtotal — Paid & Initiated*")
+        cr.markdown(f"**{fmt(sum(b['amount'] for b in f_done))}**")
     else:
-        st.info("No paid or initiated bills match current filters.")
+        st.info(f"No Paid or Initiated bills in the {sat.strftime('%-m/%-d')}–{fri.strftime('%-m/%-d')} window.")
 
     st.markdown("---")
 
-    # ── PENDING section ─────────────────────────────────────────
-    st.markdown(f"### ⏳ Still Pending  <span style='font-size:14px;color:#9e9990;font-weight:normal'>({len(filtered_pending)} bills · {fmt(sum(b['amount'] for b in filtered_pending))})</span>", unsafe_allow_html=True)
-    st.caption("Bills not yet initiated or paid — includes all overdue unpaid bills")
+    # ── Section 2: This Week Pending ─────────────────────────────────────
+    st.markdown(
+        f"### ⏳ Still Pending — This Week "
+        f"<span style='font-size:14px;color:#9e9990;font-weight:normal'>"
+        f"({len(f_this_wk)} bills · {fmt(sum(b['amount'] for b in f_this_wk))})"
+        f"</span>", unsafe_allow_html=True)
+    st.caption(f"Bills the AP forecast schedules for {cur_mon.strftime('%-m/%-d')}–{cur_sun.strftime('%-m/%-d')} that are not yet Initiated or Paid.")
 
-    if filtered_pending:
-        rows = []
-        for b in filtered_pending:
-            rows.append({
-                "Vendor":      b["vendor"],
-                "Invoice #":   b["inv"],
-                "Description": b["memo"],
-                "Status":      b["status_label"],
-                "Due Date":    fmt_date(b["due"]) if b["due"] else "—",
-                "Days O/S":    days_out_str(b["due"]),
-                "Sched. Pay":  fmt_date(b["pay_date"]) if b["pay_date"] else "—",
-                "Amount":      fmt(b["amount"]),
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True,
-                     height=min(35 * len(rows) + 38, 600))
-        col_l, col_r = st.columns([4, 1])
-        col_l.markdown("*Subtotal — Still Pending*")
-        col_r.markdown(f"**{fmt(sum(b['amount'] for b in filtered_pending))}**")
+    if f_this_wk:
+        rows = [{"Vendor": b["vendor"], "Invoice #": b["inv"],
+                 "Status": b["status_label"],
+                 "Due Date": fmt_date(b["due"]) if b["due"] else "—",
+                 "Sched. Pay": fmt_date(b["pay_date"]) if b["pay_date"] else "—",
+                 "Days O/S": days_os(b["pay_date"], today),
+                 "Amount": fmt(b["amount"])} for b in f_this_wk]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                     height=min(35 * len(rows) + 38, 500))
+        cl, cr = st.columns([4, 1])
+        cl.markdown("*Subtotal — This Week Pending*")
+        cr.markdown(f"**{fmt(sum(b['amount'] for b in f_this_wk))}**")
     else:
-        st.success("All bills paid or initiated! 🎉")
+        st.success("All this week's scheduled bills are paid or initiated! 🎉")
+
+    st.markdown("---")
+
+    # ── Section 3: Overdue Pending ───────────────────────────────────────
+    st.markdown(
+        f"### ⚠️ Still Pending — Overdue "
+        f"<span style='font-size:14px;color:#9e9990;font-weight:normal'>"
+        f"({len(f_overdue)} bills · {fmt(sum(b['amount'] for b in f_overdue))})"
+        f"</span>", unsafe_allow_html=True)
+    st.caption("Bills whose AP forecast payment date was before this Monday. Sorted oldest first.")
+
+    if f_overdue:
+        rows = [{"Vendor": b["vendor"], "Invoice #": b["inv"],
+                 "Status": b["status_label"],
+                 "Due Date": fmt_date(b["due"]) if b["due"] else "—",
+                 "Sched. Pay": fmt_date(b["pay_date"]) if b["pay_date"] else "—",
+                 "Days O/S": days_os(b["pay_date"], today),
+                 "Amount": fmt(b["amount"])} for b in f_overdue]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                     height=min(35 * len(rows) + 38, 600))
+        cl, cr = st.columns([4, 1])
+        cl.markdown("*Subtotal — Overdue Pending*")
+        cr.markdown(f"**{fmt(sum(b['amount'] for b in f_overdue))}**")
+    else:
+        st.success("No overdue unpaid bills! 🎉")
 
     st.markdown("---")
     if st.button("🔄 Refresh from Supabase"):
         st.cache_data.clear()
         st.rerun()
-    st.caption(f"{len(raw_bills)} total bills in Supabase · {len(done)} paid/initiated · {len(pending)} pending")
+    st.caption(
+        f"{len(raw_bills)} total bills · {len(done)} paid/initiated this window · "
+        f"{len(this_week)} pending this week · {len(overdue)} overdue"
+    )
