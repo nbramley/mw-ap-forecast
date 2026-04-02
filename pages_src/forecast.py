@@ -11,8 +11,13 @@ from data import (INVENTORY_TERMS, JUSTWORKS_PAYROLL, JUSTWORKS_TAXES,
                   adj_back, adj_fwd, fmt, monday_of, week_idx)
 
 
+def sat_of(d: date) -> date:
+    """Return the most recent Saturday on or before d."""
+    days_since_sat = (d.weekday() + 2) % 7  # Mon=0..Sun=6 -> Sat=0
+    return d - timedelta(days=days_since_sat)
+
 def get_week_starts(today: date) -> list:
-    return [monday_of(today) + timedelta(weeks=i) for i in range(6)]
+    return [sat_of(today) + timedelta(weeks=i) for i in range(6)]
 
 
 @st.cache_data(ttl=300)
@@ -68,8 +73,8 @@ def show():
 
     today       = date(2026, 3, 31)
     week_starts = get_week_starts(today)
-    week_labels = [f"Wk {ws.strftime('%-m/%-d')}" for ws in week_starts]
-    overdue_lbl = "Overdue (Pay by 3/31)"
+    week_labels = [f"Wk {ws.strftime('%-m/%-d')}–{(ws+timedelta(6)).strftime('%-m/%-d')}" for ws in week_starts]
+    overdue_lbl = f"Overdue (Prior to {week_starts[0].strftime('%-m/%-d')})"
 
     # ── Load bills from Supabase ────────────────────────────────
     with st.spinner("Loading from Supabase..."):
