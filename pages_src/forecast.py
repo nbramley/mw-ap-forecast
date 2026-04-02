@@ -229,7 +229,7 @@ def show():
             vals = [vendor, fv(bk["ov"])] + [fv(bk["wks"][i]) for i in range(6)] + [fv(bk["ov"]+sum(bk["wks"]))]
             body += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">'
             for j, v in enumerate(vals):
-                body += f'<td style="padding:6px 10px;text-align:{"left" if j==0 else "right"};color:#ffffff;font-size:13px;">{v}</td>'
+                body += f'<td style="padding:6px 10px;text-align:{"left" if j==0 else "right"};color:#000000;font-size:13px;">{v}</td>'
             body += "</tr>"
             sec_ov += bk["ov"]
             for i in range(6): sec_wks[i] += bk["wks"][i]
@@ -238,7 +238,7 @@ def show():
         tvs = [f"TOTAL — {sec_name.upper()}", fv(sec_ov)] + [fv(sec_wks[i]) for i in range(6)] + [fv(sec_ov+sum(sec_wks))]
         body += '<tr style="background:rgba(13,27,42,0.8);border-top:1px solid rgba(255,255,255,0.12);">'
         for j, v in enumerate(tvs):
-            body += f'<td style="padding:8px 10px;text-align:{"left" if j==0 else "right"};color:#ffffff;font-weight:700;font-size:13px;">{v}</td>'
+            body += f'<td style="padding:8px 10px;text-align:{"left" if j==0 else "right"};color:#000000;font-weight:700;font-size:13px;">{v}</td>'
         body += f'</tr><tr><td colspan="{len(all_cols)}" style="height:10px;background:transparent;border:none;"></td></tr>'
 
     # Grand total
