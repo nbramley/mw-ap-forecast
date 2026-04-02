@@ -56,7 +56,7 @@ def show():
         <div class="sub">MACK WELDON</div>
         <h1>Weekly Bill Pay</h1>
       </div>
-      <div class="mw-badge">{WEEK_START.strftime('%-m/%-d')} — {WEEK_END.strftime('%-m/%-d/%Y')}</div>
+      <div class="mw-badge">{WEEK_START.strftime('%-m/%-d')}–{WEEK_END.strftime('%-m/%-d/%Y')}</div>
     </div>
     """, unsafe_allow_html=True)
 
